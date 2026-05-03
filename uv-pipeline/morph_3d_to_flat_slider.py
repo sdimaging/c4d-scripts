@@ -27,9 +27,14 @@ USAGE
 2. Extensions → Script Manager → Load Script File → load this file → Execute.
 3. A new object  "<NAME>_UV_MORPH_SPLIT"  is added with:
    - Split-topology mesh (4× the polygon corner count)
-   - "Factor" slider (0-1) and "Scale" slider (0-200) in User Data
+   - "Factor" slider (0-1), "Scale" slider (0-200) and "Centered" checkbox
+     in User Data
    - "UV Morph SPLIT" Python tag that does the per-vertex morph live
 4. Drag the Factor slider on the new object to morph between 3D and flat.
+
+The "Centered" checkbox (default ON) keeps the flat layout symmetric
+around the object's local origin. Toggle OFF to fall back to UV(0,0)
+mapping to origin (so the flat drifts to one corner as factor increases).
 
 ------------------------------------------------------------------------------
 HOW IT WORKS
@@ -78,6 +83,7 @@ SCALE_DEFAULT = 50.0
 SCALE_MAX = 200.0
 CACHE_SLOT = 99999
 CACHE_OFFSET_UV = 10000
+CACHE_UV_BBOX_CENTER = 99998  # vec3 of UV-space bbox center, baked once
 
 
 def build_split_topology(src):
@@ -148,10 +154,23 @@ def add_slider_ud(obj, name, short_name, vmin, vmax, default, step):
     return new_id
 
 
-def make_python_tag_code(factor_id, scale_id):
+def add_bool_ud(obj, name, default):
+    """Add a Bool checkbox user-data; returns its DescID."""
+    bc_ud = c4d.GetCustomDataTypeDefault(c4d.DTYPE_BOOL)
+    bc_ud[c4d.DESC_NAME] = name
+    bc_ud[c4d.DESC_SHORT_NAME] = name
+    bc_ud[c4d.DESC_DEFAULT] = default
+    bc_ud[c4d.DESC_ANIMATE] = c4d.DESC_ANIMATE_ON
+    new_id = obj.AddUserData(bc_ud)
+    obj[new_id] = default
+    return new_id
+
+
+def make_python_tag_code(factor_id, scale_id, centered_id):
     """Generate the Python tag code with the actual UD DescIDs baked in."""
     fid = factor_id
     sid = scale_id
+    cid = centered_id
     return f'''import c4d
 
 def main():
@@ -164,14 +183,25 @@ def main():
                     c4d.DescLevel({fid[1].id}, {fid[1].dtype}, {fid[1].creator}))
     sid = c4d.DescID(c4d.DescLevel({sid[0].id}, {sid[0].dtype}, {sid[0].creator}),
                     c4d.DescLevel({sid[1].id}, {sid[1].dtype}, {sid[1].creator}))
+    cid = c4d.DescID(c4d.DescLevel({cid[0].id}, {cid[0].dtype}, {cid[0].creator}),
+                    c4d.DescLevel({cid[1].id}, {cid[1].dtype}, {cid[1].creator}))
     factor = obj[fid] if obj[fid] is not None else 0.0
     scale  = obj[sid] if obj[sid] is not None else {SCALE_DEFAULT}
+    centered = obj[cid] if obj[cid] is not None else True
+
+    # If centered: subtract the UV-bbox center so the flat layout is
+    # symmetric around the object's local origin (rather than UV(0,0)
+    # mapping to origin which makes the flat drift to one corner).
+    uv_center = cache.GetVector({CACHE_UV_BBOX_CENTER}) if centered else c4d.Vector(0, 0, 0)
+
     n = obj.GetPointCount()
     new_pts = []
     for i in range(n):
         orig = cache.GetVector(i)
         uv = cache.GetVector({CACHE_OFFSET_UV} + i)
-        flat = c4d.Vector(uv.x * scale, -uv.y * scale, 0)
+        u = uv.x - uv_center.x
+        v = uv.y - uv_center.y
+        flat = c4d.Vector(u * scale, -v * scale, 0)
         new_pts.append(orig + (flat - orig) * factor)
     obj.SetAllPoints(new_pts)
     # NOTE: do NOT call obj.Message(c4d.MSG_UPDATE) here — would cause
@@ -223,16 +253,26 @@ def main():
     doc.InsertObject(morph_obj, pred=src)
     doc.AddUndo(c4d.UNDOTYPE_NEW, morph_obj)
 
-    # 3. Cache (orig_3d, uv) per output vertex
+    # 3. Cache (orig_3d, uv) per output vertex + UV-bbox center for centering
+    min_uv = c4d.Vector(1e9, 1e9, 0)
+    max_uv = c4d.Vector(-1e9, -1e9, 0)
+    for uv in uv_for_out:
+        if uv.x < min_uv.x: min_uv.x = uv.x
+        if uv.y < min_uv.y: min_uv.y = uv.y
+        if uv.x > max_uv.x: max_uv.x = uv.x
+        if uv.y > max_uv.y: max_uv.y = uv.y
+    uv_bbox_center = (min_uv + max_uv) * 0.5
+
     data_bc = c4d.BaseContainer()
     for i in range(out_n):
         orig = src_pts[src_vert_for_out[i]]
         uv = uv_for_out[i]
         data_bc.SetVector(i, orig)
         data_bc.SetVector(CACHE_OFFSET_UV + i, uv)
+    data_bc.SetVector(CACHE_UV_BBOX_CENTER, uv_bbox_center)
     morph_obj.GetDataInstance().SetContainer(CACHE_SLOT, data_bc)
 
-    # 4. Add UD sliders
+    # 4. Add UD sliders + Centered toggle
     factor_id = add_slider_ud(
         morph_obj, "Factor", "Factor",
         0.0, 1.0, 0.0, 0.01,
@@ -241,12 +281,15 @@ def main():
         morph_obj, "Scale", "Scale",
         0.0, SCALE_MAX, SCALE_DEFAULT, 1.0,
     )
+    centered_id = add_bool_ud(
+        morph_obj, "Centered", True,
+    )
 
     # 5. Python tag
     py_tag = c4d.BaseTag(c4d.Tpython)
     py_tag.SetName("UV Morph SPLIT")
     morph_obj.InsertTag(py_tag)
-    py_tag[c4d.TPYTHON_CODE] = make_python_tag_code(factor_id, scale_id)
+    py_tag[c4d.TPYTHON_CODE] = make_python_tag_code(factor_id, scale_id, centered_id)
     doc.AddUndo(c4d.UNDOTYPE_NEW, py_tag)
 
     doc.SetActiveObject(morph_obj, c4d.SELECTION_NEW)

@@ -36,6 +36,30 @@ Drops a planar polygon mesh next to your source. Each input poly is reproduced a
 
 **Usage:** select your source mesh → run.
 
+### 4. `morph_3d_to_flat_slider.py` — live 3D ↔ flat morph slider
+
+A different angle on the flatten direction: instead of producing a static
+flat copy you modify with booleans, this gives you a **live morphing copy**
+driven by a single 0-1 slider on the new object.
+
+- **Factor=0**: looks like the original 3D mesh (split verts coincide on
+  source 3D positions, no visible seams)
+- **Factor=1**: fully flat UV unwrap with proper UV-island separation
+  (same flat output as `flatten_uv_to_geo.py`)
+- **Factor in between**: smooth morph, seams visibly fan apart as the
+  islands separate. Looks like the head "explodes" along its UV seams.
+
+Topology stays consistent throughout — 4× the polygon-corner count of
+the source (one output vertex per polygon-vertex pair). The slider just
+drives positions per-vertex via a Python tag. Keyframe-able, animate-able,
+render-able.
+
+Use this when you want a smooth animation of an object opening up into
+its UV layout (or the reverse). Use `flatten_uv_to_geo.py` instead when
+you want a static flat copy to perform booleans on.
+
+**Usage:** select your source mesh → run.
+
 ### 2. `unflatten_uv_to_geo.py` — modified flat → chair
 
 Reverse of #1. Takes the flat mesh (with whatever modifications you've made — boolean cuts, polygon deletions, even new geometry) and projects every vertex back onto the curved 3D source via barycentric UV→3D mapping.
